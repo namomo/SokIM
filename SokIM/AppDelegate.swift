@@ -27,20 +27,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         debug()
 
         startCheckingUpdate()
+        startCheckingSecureInput()
         startMonitorsInitially()
 
         // 사용자가 입력기를 변경하는 시점에 대부분 버림
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(clearExceptEngine),
-            name: NSTextInputContext.keyboardSelectionDidChangeNotification,
-            object: nil
-        )
-
-        // 입력기가 변경되는 시점에 보안 입력 상태인 경우 모두 버리고 영문 소문자 입력으로 변경
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(abcOnSecureInput),
             name: NSTextInputContext.keyboardSelectionDidChangeNotification,
             object: nil
         )
@@ -157,6 +150,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         statusBar.checkUpdate(sender: nil)
     }
 
+    // 보안 입력 상태인 경우 모두 버리고 영문 소문자 입력으로 변경
+    private func startCheckingSecureInput() {
+        debug()
+
+        Task {
+            while true {
+                if IsSecureEventInputEnabled() {
+                    await MainActor.run {
+                        clearExceptEngine(nil)
+                        state = State(engine: state.engines.A)
+
+                        debug("변경 완료")
+                    }
+                }
+
+                _ = try? await Task.sleep(for: .seconds(0.3))
+            }
+        }
+    }
+
     private func startMonitorsInitially() {
         debug()
 
@@ -222,6 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         // 별도 처리: 암호 필드에 포커스된 경우 OS가 대신 처리
         if IsSecureEventInputEnabled() {
+            state = State(engine: state.engines.A)
             return false
         }
 
@@ -390,17 +404,5 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         sender = nil
         InputContext.commit()
         setKeyboardCapsLock(enabled: false)
-    }
-
-    @objc private func abcOnSecureInput(_ aNotification: Notification) {
-        debug("\(String(describing: aNotification))")
-
-        guard IsSecureEventInputEnabled() else { return }
-
-        clearExceptEngine(nil)
-        state.engine = state.engines.A
-        statusBar.setEngine(state.engines.A)
-
-        debug("abcOnSecureInput 성공")
     }
 }
