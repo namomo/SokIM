@@ -155,21 +155,28 @@ struct State: CustomStringConvertible {
 
     // MARK: - KeyboardEngine
 
-    var engine: Engine.Type = TwoSetEngine.self
+    let engines = (한: TwoSetEngine.self, A: QwertyEngine.self) // TODO: #24
+
+    private var _engine: Engine.Type = TwoSetEngine.self
+    var engine: Engine.Type {
+        get { _engine }
+        set {
+            _engine = newValue
+            appDelegate()?.statusBar.setEngine(engine)
+        }
+    }
+
     init(engine: Engine.Type) {
         debug("\(engine)")
 
         self.engine = engine
     }
-    let engines = (한: TwoSetEngine.self, A: QwertyEngine.self) // TODO: #24
 
     /** 사용 가능한 다음 engine으로 변경 */
     mutating func rotate() {
         debug()
 
         engine = engine == engines.한 ? engines.A : engines.한
-
-        appDelegate()?.statusBar.setEngine(engine)
     }
 
     // MARK: - CharTuple

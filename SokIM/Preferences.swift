@@ -17,7 +17,6 @@ private struct Defaults {
         case rotateShortcut = "RotateShortcut"
         case rotateShortcuts = "RotateShortcuts"
         case graveOverWon = "GraveOverWon"
-        case suppressABC = "SuppressABC"
         case debug = "Debug"
     }
 
@@ -76,15 +75,6 @@ struct Preferences {
         set {
             _graveOverWon = newValue
             Defaults.set(.graveOverWon, newValue)
-        }
-    }
-
-    private static var _suppressABC = Defaults.get(.suppressABC) ?? true
-    static var suppressABC: Bool {
-        get { _suppressABC }
-        set {
-            _suppressABC = newValue
-            Defaults.set(.suppressABC, newValue)
         }
     }
 

@@ -1,13 +1,19 @@
 import QuartzCore
 
 enum ClickMonitorError: Error, CustomStringConvertible {
+    case axProcessNotTrusted
     case failedToCreateTap
+    case failedToEnableTap
     case failedToCreateSource
 
     var description: String {
         switch self {
+        case .axProcessNotTrusted:
+            "손쉬운 사용 권한을 허용해 주세요."
         case .failedToCreateTap:
-            "알 수 없는 오류가 발생했습니다. (tap)"
+            "알 수 없는 오류가 발생했습니다. (tapCreate)"
+        case .failedToEnableTap:
+            "알 수 없는 오류가 발생했습니다. (tapEnable)"
         case .failedToCreateSource:
             "알 수 없는 오류가 발생했습니다. (source)"
         }
@@ -16,8 +22,8 @@ enum ClickMonitorError: Error, CustomStringConvertible {
 
 /**
  마우스 클릭 모니터링
- @see https://github.com/pqrs-org/Karabiner-Elements/blob/main/DEVELOPMENT.md
- @see https://github.com/pqrs-org/Karabiner-Elements/blob/main/src/share/monitor/event_tap_monitor.hpp
+ - [Karabiner-Elements: Development](https://github.com/pqrs-org/Karabiner-Elements/blob/main/DEVELOPMENT.md)
+ - [Karabiner-Elements: `event_tap_monitor.hpp`](https://github.com/pqrs-org/Karabiner-Elements/blob/main/src/share/monitor/event_tap_monitor.hpp)
  */
 class ClickMonitor {
     private var tap: CFMachPort?
@@ -34,14 +40,17 @@ class ClickMonitor {
         let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: CGEventMask(
                 1 << CGEventType.leftMouseDown.rawValue
                 | 1 << CGEventType.rightMouseDown.rawValue
                 | 1 << CGEventType.otherMouseDown.rawValue
             ),
-            callback: { _, _, event, _ in
-                debug()
+            callback: { _, type, event, _ in
+                debug("\(type) \(event.flags)")
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    appDelegate()?.restartMonitors(nil)
+                }
 
                 // 사용자가 마우스 클릭하는 시점에 조합 종료
                 appDelegate()?.commit()
@@ -51,7 +60,11 @@ class ClickMonitor {
         )
         guard let tap else {
             warning("CGEvent.tapCreate 실패")
-            throw ClickMonitorError.failedToCreateTap
+            if AXIsProcessTrusted() {
+                throw ClickMonitorError.failedToCreateTap
+            } else {
+                throw ClickMonitorError.axProcessNotTrusted
+            }
         }
         self.tap = tap
 
@@ -64,6 +77,11 @@ class ClickMonitor {
 
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
         CGEvent.tapEnable(tap: tap, enable: true)
+
+        if !CGEvent.tapIsEnabled(tap: tap) {
+            warning("CGEvent.tapEnable 실패")
+            throw ClickMonitorError.failedToEnableTap
+        }
     }
 
     func stop() {

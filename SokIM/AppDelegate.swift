@@ -27,28 +27,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         debug()
 
         startCheckingUpdate()
+        startCheckingSecureInput()
         startMonitorsInitially()
 
         // 사용자가 입력기를 변경하는 시점에 대부분 버림
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(clearExceptEngine),
-            name: NSTextInputContext.keyboardSelectionDidChangeNotification,
-            object: nil
-        )
-
-        // 입력기가 변경되는 시점에 ABC 입력기 제한 로직 실행
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(suppressABC),
-            name: NSTextInputContext.keyboardSelectionDidChangeNotification,
-            object: nil
-        )
-
-        // 입력기가 변경되는 시점에 보안 입력 상태인 경우 모두 버리고 영문 소문자 입력으로 변경
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(abcOnSecureInput),
             name: NSTextInputContext.keyboardSelectionDidChangeNotification,
             object: nil
         )
@@ -100,7 +85,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         center.delegate = self
 
         Task {
-            _ = try? await center.requestAuthorization(options: [.alert, .sound])
             var deliveredName = ""
 
             while true {
@@ -109,45 +93,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 let config = URLSessionConfiguration.ephemeral
                 config.timeoutIntervalForResource = 15
                 let url = URL(string: "https://api.github.com/repos/kiding/SokIM/releases/latest")!
-                guard let data = try? await URLSession(configuration: config).data(from: url).0 else {
-                    warning("요청 실패: \(url)")
-                    return
-                }
 
-                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let name = json["name"] as? String else {
-                    warning("릴리스 이름 파싱 실패")
-                    return
-                }
+                if let data = try? await URLSession(configuration: config).data(from: url).0,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let name = json["name"] as? String,
+                   let latestString = name.wholeMatch(of: /v[\d.]+ \((\d+)\)/)?.1,
+                   let latest = Int(latestString),
+                   let currentString = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+                   let current = Int(currentString) {
+                    debug("current: \(current), latest: \(latest)")
 
-                guard let latestString = name.wholeMatch(of: /v[\d.]+ \((\d+)\)/)?.1,
-                      let latest = Int(latestString) else {
-                    warning("알 수 없는 릴리스 이름: \(name)")
-                    return
-                }
+                    if current < latest {
+                        debug("새로운 업데이트: \(latest)")
 
-                guard let currentString = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-                      let current = Int(currentString) else {
-                    warning("CFBundleVersion 없거나 숫자가 아님")
-                    return
-                }
+                        await MainActor.run {
+                            statusBar.setStatus("📥")
+                            statusBar.setNotice("📥 새로운 업데이트가 있습니다.")
+                        }
 
-                debug("current: \(current), latest: \(latest)")
-                if current < latest {
-                    await MainActor.run {
-                        statusBar.setStatus("📥")
-                        statusBar.setNotice("📥 새로운 업데이트가 있습니다.")
+                        if deliveredName == name {
+                            debug("이미 알림 전송함")
+                        } else {
+                            debug("알림 전송")
+
+                            let content = UNMutableNotificationContent()
+                            content.title = "속 입력기"
+                            content.body = "\(name) 업데이트가 있습니다."
+                            let request = UNNotificationRequest(identifier: name, content: content, trigger: nil)
+
+                            do {
+                                try await center.requestAuthorization(options: [.alert, .sound])
+                                try await center.add(request)
+                                deliveredName = name
+                            } catch {
+                                warning("\(error)")
+                            }
+                        }
+                    } else {
+                        debug("현재 최신 버전")
                     }
-
-                    if deliveredName != name {
-                        deliveredName = name
-
-                        let content = UNMutableNotificationContent()
-                        content.title = "속 입력기"
-                        content.body = "\(name) 업데이트가 있습니다."
-                        let request = UNNotificationRequest(identifier: name, content: content, trigger: nil)
-                        _ = try? await center.add(request)
-                    }
+                } else {
+                    warning("업데이트 확인 실패: \(url)")
                 }
 
                 _ = try? await Task.sleep(for: .seconds(86400 * 2))
@@ -162,6 +148,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         debug()
 
         statusBar.checkUpdate(sender: nil)
+    }
+
+    // 보안 입력 상태인 경우 모두 버리고 영문 소문자 입력으로 변경
+    private func startCheckingSecureInput() {
+        debug()
+
+        Task {
+            while true {
+                if IsSecureEventInputEnabled() {
+                    await MainActor.run {
+                        clearExceptEngine(nil)
+                        state = State(engine: state.engines.A)
+
+                        debug("변경 완료")
+                    }
+                }
+
+                _ = try? await Task.sleep(for: .seconds(0.3))
+            }
+        }
     }
 
     private func startMonitorsInitially() {
@@ -229,6 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         // 별도 처리: 암호 필드에 포커스된 경우 OS가 대신 처리
         if IsSecureEventInputEnabled() {
+            state = State(engine: state.engines.A)
             return false
         }
 
@@ -397,63 +404,5 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         sender = nil
         InputContext.commit()
         setKeyboardCapsLock(enabled: false)
-    }
-
-    /** 암호 입력 필드를 위한 ABC 입력기 제한 기능 */
-    @objc private func suppressABC(_ aNotification: Notification) {
-        debug("\(String(describing: aNotification))")
-
-        guard Preferences.suppressABC == true else { return }
-
-        guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
-            warning("TISCopyCurrentKeyboardInputSource 실패")
-            return
-        }
-
-        guard let currentIDOpaque = TISGetInputSourceProperty(current, kTISPropertyInputSourceID) else {
-            warning("TISGetInputSourceProperty 실패")
-            return
-        }
-        let currentID = Unmanaged<CFString>.fromOpaque(currentIDOpaque).takeUnretainedValue() as String
-
-        guard currentID == "com.apple.keylayout.ABC" || currentID == "com.apple.keylayout.US" else {
-            debug("현재 입력기 ABC 아님: \(currentID)")
-            return
-        }
-
-        guard let sokArray = TISCreateInputSourceList([
-            kTISPropertyInputSourceType: kTISTypeKeyboardInputMode,
-            kTISPropertyInputModeID: "com.kiding.inputmethod.sok.mode" as CFString
-        ] as CFDictionary, false)?.takeRetainedValue() as? [TISInputSource] else {
-            warning("TISCreateInputSourceList 실패")
-            return
-        }
-
-        guard let sok = sokArray.first else {
-            warning("sokArray.first 실패")
-            return
-        }
-
-        // "시스템 설정 > 암호" 필드에서는 무한 루프에 빠질 수 있음
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
-            guard TISSelectInputSource(sok) == 0 else {
-                warning("TISSelectInputSource 실패")
-                return
-            }
-
-            debug("ABC 입력기 제한 성공")
-        }
-    }
-
-    @objc private func abcOnSecureInput(_ aNotification: Notification) {
-        debug("\(String(describing: aNotification))")
-
-        guard IsSecureEventInputEnabled() else { return }
-
-        clearExceptEngine(nil)
-        state.engine = state.engines.A
-        statusBar.setEngine(state.engines.A)
-
-        debug("abcOnSecureInput 성공")
     }
 }
